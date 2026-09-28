@@ -40,50 +40,160 @@ def _http_get(url, params=None, headers=None, timeout=15):
                 pass
         return raw.decode("utf-8", "ignore")
 
-def _fetch_bing_direct(query, count):
-    """Google Images-style multi-image approach: parses the Bing Images page +
-    async endpoint directly. Also works for company / obscure queries."""
-    import html as _H
-    headers = {
-        "User-Agent": UA,
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.bing.com/",
-    }
-    out, seen = [], set()
-    pages = [
-        ("https://www.bing.com/images/async",
-         {"q": query, "first": "1", "count": str(max(count * 4, 35)),
-          "cw": "1177", "ch": "705", "relp": "35", "datsrc": "I", "layout": "RowBased"}),
-        ("https://www.bing.com/images/search",
-         {"q": query, "form": "HDRSC2"}),
-    ]
-    for url, params in pages:
-        try:
-            raw = _http_get(url, params, headers, timeout=20)
-        except Exception:
-            continue
-        t = _H.unescape(raw.replace("&quot;", '"').replace("&amp;", "&"))
-        murls = re.findall(r'"murl":"(.*?)"', t)
-        turls = re.findall(r'"turl":"(.*?)"', t)
-        purls = re.findall(r'"purl":"(.*?)"', t)
-        titles = re.findall(r'"t":"(.*?)"', t)
-        for i, mu in enumerate(murls):
-            mu = mu.replace("\\/", "/").strip()
-            if not mu or mu in seen or len(mu) < 12:
-                continue
-            seen.add(mu)
-            tu = (turls[i].replace("\\/", "/") if i < len(turls) else mu)
-            pu = (purls[i].replace("\\/", "/") if i < len(purls) else "")
-            ti = (titles[i] if i < len(titles) else query)
-            out.append({"title": ti or query, "image": mu,
-                        "thumbnail": tu or mu, "page": pu,
-                        "source": "Bing", "width": 0, "height": 0})
-            if len(out) >= count:
-                return out
-        if len(out) >= count:
-            break
-    return out
+def fetch_images(query, count=5):
+    """
+    Google/Bing-style image search.
 
+    Bing is the primary provider.
+    Bing ke native result order ko preserve karte hain.
+    Baaki providers sirf fallback ke liye use honge.
+    """
+
+    query = query.strip()
+
+    if not query:
+        return []
+
+    # ---------------------------------------------------------
+    # 1. BING FIRST
+    # ---------------------------------------------------------
+
+    bing_unique = []
+
+    try:
+        bing_results = _fetch_bing_direct(
+            query,
+            max(count * 3, 15)
+        )
+
+        seen_url = set()
+
+        for im in bing_results:
+
+            url = im.get("image", "")
+
+            if not url:
+                continue
+
+            if url in seen_url:
+                continue
+
+            seen_url.add(url)
+
+            if not im.get("source"):
+                im["source"] = "Bing"
+
+            bing_unique.append(im)
+
+        # -----------------------------------------------------
+        # IMPORTANT:
+        # If Bing has enough results, directly return Bing.
+        # Do NOT mix other providers.
+        # -----------------------------------------------------
+
+        if len(bing_unique) >= count:
+            return bing_unique[:count]
+
+    except Exception as e:
+        print(f"Bing search failed: {e}")
+
+    # ---------------------------------------------------------
+    # 2. FALLBACK PROVIDERS
+    # ---------------------------------------------------------
+
+    fallback_fetchers = [
+        ("DuckDuckGo", _fetch_ddg),
+        ("Openverse", _fetch_openverse),
+        ("Wikimedia", _fetch_wiki),
+    ]
+
+    pool = []
+    seen_url = set()
+
+    # Keep any Bing results we already got
+    for im in bing_unique:
+
+        url = im.get("image", "")
+
+        if not url:
+            continue
+
+        if url in seen_url:
+            continue
+
+        seen_url.add(url)
+        pool.append(im)
+
+    # ---------------------------------------------------------
+    # Fetch fallback providers
+    # ---------------------------------------------------------
+
+    for source_name, fetcher in fallback_fetchers:
+
+        try:
+
+            results = fetcher(
+                query,
+                max(count * 2, 10)
+            )
+
+            for im in results:
+
+                url = im.get("image", "")
+
+                if not url:
+                    continue
+
+                if url in seen_url:
+                    continue
+
+                seen_url.add(url)
+
+                if not im.get("source"):
+                    im["source"] = source_name
+
+                pool.append(im)
+
+                if len(pool) >= count * 3:
+                    break
+
+        except Exception as e:
+
+            print(f"{source_name} search failed: {e}")
+            continue
+
+    # ---------------------------------------------------------
+    # No results
+    # ---------------------------------------------------------
+
+    if not pool:
+
+        raise RuntimeError(
+            "No images found. Please check the spelling and try again."
+        )
+
+    # ---------------------------------------------------------
+    # Relevance ranking
+    # ---------------------------------------------------------
+
+    ranked = _rerank_by_text(query, pool)
+
+    # ---------------------------------------------------------
+    # Remove visually duplicate images
+    # ---------------------------------------------------------
+
+    unique = _drop_near_duplicates(ranked)
+
+    # ---------------------------------------------------------
+    # Return Top N
+    # ---------------------------------------------------------
+
+    return unique[:count]
+_STOP = {
+    "the", "a", "an", "of", "in", "on", "at", "for", "and", "or",
+    "to", "near", "road", "photo", "photos", "image", "images",
+    "mein", "me", "ka", "ki", "ke", "hai", "par"
+}
 
 def _fetch_ddg(query, count):
     """Fallback: DuckDuckGo i.js (Bing/Google sourced JSON)."""
