@@ -1,0 +1,50 @@
+PHOTO SEARCH API — REFERENCE (v1.1.0)
+====================================
+Base URL (local):  http://localhost:8000
+No API key needed. All responses are JSON. CORS is open (*).
+
+ENDPOINTS
+---------
+1) GET /api/search?q=<text>&n=<1-10>
+   Search images (Top-N, default 5).
+   Example:
+     curl "http://localhost:8000/api/search?q=taj%20mahal&n=5"
+   Success (200):
+     {"ok": true, "query": "taj mahal", "count": 5,
+      "engine": "Google-style (DDG/Bing) + similarity 1+2",
+      "images": [{"title": "...", "image": "https://... (full image)",
+                   "thumbnail": "https://...", "page": "https://... (source page)",
+                   "source": "Bing", "relevance": 0.85, "width": 0, "height": 0}]}
+    Each image now carries "relevance" (0..1 text-similarity score, highest first) and near-duplicate photos are removed via perceptual hash.
+   Errors:
+     400 {"ok": false, "error": "Please type something in the search box first"}
+     400 {"ok": false, "error": "Parameter 'n' must be a number (1-10)"}
+     502 {"ok": false, "error": "No images found..."}
+
+2) GET /api/health
+   Example:  curl http://localhost:8000/api/health
+   Response: {"ok": true, "service": "photo-search", "version": "1.1.0"}
+
+3) GET /api/docs
+   Machine-readable API reference (JSON).
+   Example:  curl http://localhost:8000/api/docs
+
+QUICK TESTS
+-----------
+curl "http://localhost:8000/api/health"
+curl "http://localhost:8000/api/search?q=pl%20sharma%20road%20meerut&n=5"
+curl "http://localhost:8000/api/search?q=tata%20motors&n=3" | python3 -m json.tool
+
+JAVASCRIPT (fetch) EXAMPLE
+--------------------------
+fetch("http://localhost:8000/api/search?q=taj%20mahal&n=5")
+  .then(r => r.json())
+  .then(d => d.images.forEach(im => console.log(im.title, im.image)));
+
+PYTHON EXAMPLE
+--------------
+import urllib.request, urllib.parse, json
+q = urllib.parse.urlencode({"q": "taj mahal", "n": 5})
+data = json.load(urllib.request.urlopen("http://localhost:8000/api/search?" + q))
+for im in data["images"]:
+    print(im["title"], "->", im["image"])
